@@ -1,0 +1,163 @@
+<ROSETTASCRIPTS>
+	<SCOREFXNS>
+		<ScoreFunction name="cen_design" weights="remodel_cen" />
+		<ScoreFunction name="fullatom" weights="ref2015" symmetric="0" />
+	</SCOREFXNS>
+	
+	<RESIDUE_SELECTORS>
+		<Chain name="chain_A" chains="A" />
+		
+		<Layer name="layer_core_boundary" select_core="1" select_boundary="1" select_surface="0" use_sidechain_neighbors="1" />
+        <Layer name="surfaceLayerSelector" select_core="0" select_boundary="0" select_surface="1" use_sidechain_neighbors="1" />
+        <Layer name="coreLayerSelector" select_core="1" select_boundary="0" select_surface="0" use_sidechain_neighbors="1" />
+		<Layer name="boundaryLayerSelector" select_core="0" select_boundary="1" select_surface="0" use_sidechain_neighbors="1" />
+		<SecondaryStructure name="sheet" overlap="0" minH="3" minE="2" include_terminal_loops="false" use_dssp="true" ss="E"/>
+		<SecondaryStructure name="entire_loop" overlap="0" minH="3" minE="2" include_terminal_loops="true" use_dssp="true" ss="L"/>
+		<SecondaryStructure name="entire_helix" overlap="0" minH="3" minE="2" include_terminal_loops="false" use_dssp="true" ss="H"/>
+		<And name="helix_cap" selectors="entire_loop">
+			<PrimarySequenceNeighborhood lower="1" upper="0" selector="entire_helix"/>
+		</And>
+		<And name="helix_start" selectors="entire_helix">
+			<PrimarySequenceNeighborhood lower="0" upper="1" selector="helix_cap"/>
+		</And>
+		<And name="helix" selectors="entire_helix">
+			<Not selector="helix_start"/>
+		</And>
+		<And name="loop" selectors="entire_loop">
+			<Not selector="helix_cap"/>
+		</And>
+		<ResidueName name="CYD_picker" residue_names="CYS" />
+		<Not name="not_CYD_picker" selector="CYD_picker" />
+	</RESIDUE_SELECTORS>
+	
+	<TASKOPERATIONS>
+		<!-- Restrict residue selection during design by residue burial; standard Layer Design -->
+		<DesignRestrictions name="AllDesign">
+			<Action selector_logic="surfaceLayerSelector AND helix_start" aas="EHKPQR"/>
+			<Action selector_logic="surfaceLayerSelector AND helix" aas="EHKQR"/>
+			<Action selector_logic="surfaceLayerSelector AND sheet" aas="DEHKNQRST"/>
+			<Action selector_logic="surfaceLayerSelector AND loop" aas="DEGHKNPQRST"/>
+			<Action selector_logic="boundaryLayerSelector AND helix_start" aas="ADEHIKLMNPQRSTVWY"/>
+			<Action selector_logic="boundaryLayerSelector AND helix" aas="ADEHIKLMNQRSTVWY"/>
+			<Action selector_logic="boundaryLayerSelector AND sheet" aas="DEFHIKLMNQRSTVWY"/>
+			<Action selector_logic="boundaryLayerSelector AND loop" aas="ADEFGHIKLMNPQRSTVWY"/>
+			<Action selector_logic="coreLayerSelector AND helix_start" aas="AFILMPVWY"/>
+			<Action selector_logic="coreLayerSelector AND helix" aas="AFILMVWY"/>
+			<Action selector_logic="coreLayerSelector AND sheet" aas="FILMVWY"/>
+			<Action selector_logic="coreLayerSelector AND loop" aas="AFGILMPVWY"/>
+			<Action selector_logic="helix_cap" aas="DNST"/>
+		
+		</DesignRestrictions>
+		<!--Allow disulfides to repack but not mutate-->
+		<OperateOnResidueSubset name="no_design_disulf" selector="CYD_picker">
+			<RestrictToRepackingRLT />
+		</OperateOnResidueSubset>
+		
+		<!--Do not allow non-realistic chi angles of aromatic residues-->
+		<LimitAromaChi2 name="limitchi2" include_trp="True" />
+		
+		<!--Restrict loop bulding to abego profile-->
+		<ConsensusLoopDesign name="disallow_nonnative_loop_sequences" />
+			
+		<!--Increase rotamer diversity to packer-->
+		<ExtraRotamersGeneric name="extra_rots" ex1="True" ex2="True" />
+			
+		<!--Restrict repacking on non-disulfides-->
+		<OperateOnResidueSubset  name="no_repack_non_disulf" selector="not_CYD_picker" >
+			<PreventRepackingRLT />
+		</OperateOnResidueSubset >
+	</TASKOPERATIONS>
+	
+	<FILTERS>
+		<!--Core assessment for at least one hydrophobic per secondary structure element-->
+		<SecondaryStructureHasResidue name="ss_contributes_core"
+			secstruct_fraction_threshold="1.0" required_restypes="VILMFYW"
+			nres_required_per_secstruct="1" filter_helix="1" filter_sheet="1"
+			filter_loop="0" min_helix_length="4" min_sheet_length="2" min_loop_length="1"
+			confidence="1"/>
+		
+		<!--Verify secondary structure exists; Note: scorefile output always zero. Look at tracer output for value-->
+		<SecondaryStructureCount name="count_SS_elements" filter_helix_sheet="True" 
+			num_helix="1" num_sheet="2" num_helix_sheet="3" 
+			min_helix_length="4" min_sheet_length="3" min_loop_length="1"
+			confidence="1" />
+		
+		<!--Sheet topology filter for desired topology given by blueprint. MUST UPDATE FOR EACH UNIQUE TOPOLOGY-->
+		<SheetTopology name="filter_strand_pairing" topology="1-2.A.0" blueprint="../TopoBuild.blueprint" />
+		
+		<SecondaryStructure name="ss1" blueprint="../TopoBuild.blueprint" use_abego="1" />
+		
+		<CompoundStatement name="compound_topology_filter" >
+			<AND filter_name="ss1" />
+			<AND filter_name="filter_strand_pairing" />
+		</CompoundStatement>
+			
+		<!-- Check for favorable disulfide scores -->
+		<TaskAwareScoreType name="dslf_quality_check" task_operations="no_design_disulf"
+			scorefxn="fullatom" score_type="dslf_fa13" mode="individual" threshold="-0.27" 
+			confidence="0" />
+			
+		<!--Disulfide entropy filter; verifies that disulfide formation is favorable relative to non-bonded cys pairs-->
+		<DisulfideEntropy name="entropy" lower_bound="0" tightness="2.03" />
+		
+		<CompoundStatement name="sequence_quality_compound_filter" >
+			<AND filter_name="ss_contributes_core" />
+			<AND filter_name="count_SS_elements" />
+			<AND filter_name="dslf_quality_check" />
+			<AND filter_name="entropy" />
+		</CompoundStatement>
+	</FILTERS>
+	
+	<MOVERS>
+		<!--Assess and record DSSP-->
+		<Dssp name="dssp" />
+
+		<!--Design mainchain-->
+		<SetSecStructEnergies name="assign_secondary_structure_bonus"
+			scorefxn="cen_design" blueprint="../TopoBuild.blueprint" />
+			
+		<BluePrintBDR name="build_mainchain" scorefxn="cen_design"
+			use_abego_bias="True" blueprint="../TopoBuild.blueprint" />
+			
+		<ParsedProtocol name="mainchain_building_protocol" >
+			<Add mover="build_mainchain" />
+			<Add mover="dssp" />
+		</ParsedProtocol>
+		
+		<LoopOver name="mainchain_building_loop"
+			mover_name="mainchain_building_protocol"
+			filter_name="compound_topology_filter" iterations="1000" drift="False"
+			ms_whenfail="FAIL_DO_NOT_RETRY" />
+			
+		<Disulfidize name="disulfidizer" set1="chain_A" set2="chain_A"
+			min_disulfides="2" max_disulfides="3" match_rt_limit="1.0"
+			score_or_matchrt="true" max_disulf_score="-0.05" min_loop="5"
+			use_l_cys="true" keep_current_disulfides="false"
+			include_current_disulfides="false" use_d_cys="false" />
+			
+		<FastDesign name="fastdesign"
+			task_operations="extra_rots,limitchi2,AllDesign,no_design_disulf,disallow_nonnative_loop_sequences"
+			scorefxn="fullatom" clear_designable_residues="0" repeats="3" ramp_down_constraints="0" />
+
+		<!--Build 1000 mainchains, validate their match topology to specs, and perform disulfidier/fast_design-->
+		<ParsedProtocol name="build_mainchain_and_design_sequence" >
+			<Add mover_name="assign_secondary_structure_bonus" />
+			<Add mover_name="mainchain_building_loop" />
+			<Add mover_name="dssp" />
+			<Add mover_name="disulfidizer" />
+			<Add mover_name="fastdesign" />
+		</ParsedProtocol>
+		
+		<!--From the 1000 mainchain steps (with internal iterations=1000) and validate their match to sequence quality cutoffs -->
+		<LoopOver name="build_mainchain_and_design_sequence_loop"
+			mover_name="build_mainchain_and_design_sequence"
+			filter_name="sequence_quality_compound_filter" iterations="10"
+			drift="False" ms_whenfail="FAIL_DO_NOT_RETRY" />
+			
+	</MOVERS>
+	
+	<PROTOCOLS>
+		<Add mover_name="build_mainchain_and_design_sequence_loop" />
+	</PROTOCOLS>
+	
+</ROSETTASCRIPTS>

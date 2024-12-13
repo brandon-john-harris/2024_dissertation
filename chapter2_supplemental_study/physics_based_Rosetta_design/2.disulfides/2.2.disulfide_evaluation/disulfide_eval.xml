@@ -1,0 +1,73 @@
+<ROSETTASCRIPTS>
+	<SCOREFXNS>
+		<ScoreFunction name="fullatom" weights="ref2015" symmetric="0" />
+	</SCOREFXNS>
+	
+	<RESIDUE_SELECTORS>
+		<ResidueName name="CYD_picker" residue_name3="CYS" />
+		<Not name="not_CYD_picker" selector="CYD_picker" />
+	</RESIDUE_SELECTORS>
+	
+	<TASKOPERATIONS>
+		<OperateOnResidueSubset name="disulfide_selector" selector="not_CYD_picker">
+			<PreventRepackingRLT />
+		</OperateOnResidueSubset>
+
+		<!--Do not allow non-realistic chi angles of aromatic residues-->
+		<LimitAromaChi2 name="limitchi2" include_trp="True" />
+	
+		<!--Increase rotamer diversity to packer-->
+		<ExtraRotamersGeneric name="extra_rots" ex1="True" ex2="True" />
+	</TASKOPERATIONS>
+	
+	<FILTERS>
+
+		<!--Core assessment for at least one hydrophobic per secondary structure element-->
+		<SecondaryStructureHasResidue name="ss_contributes_core"
+			secstruct_fraction_threshold="1.0" required_restypes="VILMFYW"
+			nres_required_per_secstruct="1" filter_helix="1" filter_sheet="1"
+			filter_loop="0" min_helix_length="4" min_sheet_length="2" min_loop_length="1"
+			confidence="1"/>		
+
+		<!-- Check for favorable disulfide scores -->
+		<TaskAwareScoreType name="dslf_quality_check" task_operations="disulfide_selector"
+			scorefxn="fullatom" score_type="dslf_fa13" mode="individual" threshold="-0.27" 
+			confidence="1" />
+
+		<!--Disulfide entropy filter; verifies that disulfide formation is favorable relative to non-bonded cys pairs-->
+		<DisulfideEntropy name="entropy" lower_bound="0" tightness="2.03" confidence="1" />
+		
+		<CompoundStatement name="sequence_quality_compound_filter" >
+			<AND filter_name="ss_contributes_core" />
+			<AND filter_name="dslf_quality_check" />
+			<AND filter_name="entropy" />
+		</CompoundStatement>
+	</FILTERS>
+	
+	<MOVERS>
+		<!--Assess and record DSSP-->
+		<Dssp name="dssp" />
+
+		<!--FastRelax Mover to check if unbound peptide conformation changes-->
+		<FastRelax name="FRelax" scorefxn="fullatom"
+			disable_design="1" task_operations="extra_rots,limitchi2"
+			repeats="5" ramp_down_constraints="1">
+		</FastRelax>
+
+		<ParsedProtocol name="combine_movers" >
+			<Add mover_name="dssp" />
+			<Add mover_name="FRelax" />
+		</ParsedProtocol>
+
+		<LoopOver name="iterate"
+			mover_name="combine_movers"
+			filter_name="sequence_quality_compound_filter" iterations="10"
+			drift="False" ms_whenfail="FAIL_DO_NOT_RETRY" />
+
+	</MOVERS>
+	
+	<PROTOCOLS>
+		<Add mover="iterate"/>
+	</PROTOCOLS>
+	
+</ROSETTASCRIPTS>

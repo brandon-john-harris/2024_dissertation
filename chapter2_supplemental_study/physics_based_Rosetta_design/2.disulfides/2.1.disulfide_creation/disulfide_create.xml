@@ -1,0 +1,30 @@
+<ROSETTASCRIPTS>
+	<SCOREFXNS>
+		<ScoreFunction name="fullatom" weights="ref2015" symmetric="0" />
+	</SCOREFXNS>
+	
+	<RESIDUE_SELECTORS>
+	</RESIDUE_SELECTORS>
+	
+	<TASKOPERATIONS>
+	</TASKOPERATIONS>
+	
+	<FILTERS>
+	</FILTERS>
+	
+	<MOVERS>
+		<!-- Remove channel from pose -->
+		<SwitchChainOrder name="remove_channel" chain_order="2"/>
+
+		<!-- Add disulfides -->
+		<Disulfidize name="Disulfidize_combination" scorefxn="fullatom" max_disulf_score="-0.3" min_loop="3" min_disulfides="1" 
+			max_disulfides="2" keep_current_disulfides="False" include_current_disulfides="True" />
+	</MOVERS>
+	
+	<PROTOCOLS>
+		<!--use mover_name="remove_channel" if you need to switch chain order-->
+		Add mover_name="remove_channel" /> # 
+		<Add mover_name="Disulfidize_combination" />
+	</PROTOCOLS>
+	
+</ROSETTASCRIPTS>

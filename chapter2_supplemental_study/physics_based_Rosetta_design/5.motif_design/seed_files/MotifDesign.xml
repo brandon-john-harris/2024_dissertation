@@ -1,0 +1,433 @@
+<!-- 2021.2.20 This code is able to perform Motif-focused design using a Generic Monte Carlo iteration. Unlike DockDesign, -->
+	<!-- structures are not filtered based on specific channel-residues interfacing with peptide chain (you can create a post-hoc filter for this). -->
+	<!-- All peptide surface residues interfacing with channel are mutated to Ala prior to design. Repacking between interface is allowed.  -->
+	<!-- This code is executed after creating a library of Motif-centric scaffolds interfaced with the channel receptor site -->
+	<!-- To do: -->
+		<!-- [x] Implement layer regcognition -->
+		<!-- [x] Verify residue selectors select correct residues -->
+		<!-- [x] Ala substitution with core/boundary excluded. This causes more allowable rotamers for design by removing intial design clashes -->
+		<!-- [x] Implement a design step. This is a FastDesign mover iterated by Generic Monte Carlo -->
+		<!-- [x] Implement design filters and quality metrics. Filters are classified by the peptide fold and the peptide-channel interface -->
+		<!-- [x]   Quality metrics (aka the threshold/cutoff) are defined from Protoxin-II - VSD2 benchmark (PDB 6N4R) -->
+
+<!-- UNDERSTAND THE CODE BEFORE RUNNING IT! -->
+<ROSETTASCRIPTS>
+	<SCOREFXNS>
+		<ScoreFunction name="fullatom" weights="ref2015" symmetric="0" />
+	</SCOREFXNS>
+	
+	<RESIDUE_SELECTORS>
+		<!-- Phase 1: Layer selection -->
+		
+			<!-- Peptide and channel specification -->
+			<Chain name="Channel_chain" chains="A" />
+			<Chain name="Peptide_chain" chains="B" />
+			
+			<!-- Layer specification -->
+			<Layer name="layer_core_boundary" select_core="1" select_boundary="1" select_surface="0" use_sidechain_neighbors="1" />
+			<Layer name="surfaceLayerSelector" select_core="0" select_boundary="0" select_surface="1" use_sidechain_neighbors="1" />
+			<Layer name="coreLayerSelector" select_core="1" select_boundary="0" select_surface="0" use_sidechain_neighbors="1" />
+			<Layer name="boundaryLayerSelector" select_core="0" select_boundary="1" select_surface="0" use_sidechain_neighbors="1" />
+			
+			<!--Secondary Structure specification -->
+			<SecondaryStructure name="sheet" overlap="0" minH="3" minE="2" include_terminal_loops="false" use_dssp="true" ss="E"/>
+			<SecondaryStructure name="entire_loop" overlap="0" minH="3" minE="2" include_terminal_loops="true" use_dssp="true" ss="L"/>
+			<SecondaryStructure name="entire_helix" overlap="0" minH="3" minE="2" include_terminal_loops="false" use_dssp="true" ss="H"/>
+			
+			<And name="helix_cap" selectors="entire_loop">
+				<PrimarySequenceNeighborhood lower="1" upper="0" selector="entire_helix"/>
+			</And>
+			
+			<And name="helix_start" selectors="entire_helix">
+				<PrimarySequenceNeighborhood lower="0" upper="1" selector="helix_cap"/>
+			</And>
+			
+			<And name="helix" selectors="entire_helix">
+				<Not selector="helix_start"/>
+			</And>
+			
+			<And name="loop" selectors="entire_loop">
+				<Not selector="helix_cap"/>
+			</And>
+			
+			<!-- Disulfide specification -->
+			<!-- Note: Currently (Rosetta 2020.37) The residue_names="CYD" does not work even though documentation uses it as an example -->
+				<!-- The best method is picking cysteines, which can be troublesome if you want a non-dsf cys in your peptide -->
+				<!-- In such a case, rewrite the code to specify the cys residues for their individual pack/design operation -->
+			<ResidueName name="CYD_picker" residue_name3="CYS" />
+			<Not name="not_CYD_picker" selector="CYD_picker" />
+			
+		<!-- Phase 2: Interface determination -->
+
+			<And name="peptide_core_boundary" selectors="layer_core_boundary,Peptide_chain,not_CYD_picker" />
+			<Not name="all_but_peptide_core_boundary" selector="peptide_core_boundary" />
+
+			<And name="peptide_surface" selectors="surfaceLayerSelector,Peptide_chain,not_CYD_picker" />
+
+			<And name="peptide_dsf" selectors="Peptide_chain,CYD_picker" />
+			
+			<!-- Operate on peptide residues with desired label -->
+			<ResiduePDBInfoHasLabel name="is_core_boundary" property="LABELS core/boundary" />
+			<ResiduePDBInfoHasLabel name="is_surface" property="LABELS surface" />
+			<ResiduePDBInfoHasLabel name="is_peptide_dsf" property="LABELS Cys" />
+			
+			<!-- Operate on peptide cysteines (expected to be dsf only - we don't use mono cysteine for design) -->
+			<And name="peptide_cys" selectors="Peptide_chain,is_peptide_dsf" />
+			
+			<!-- Specifying peptide surface residues in 10 A neighorhood to channel -->
+			<Neighborhood name="channel_neighbors" selector="Channel_chain" distance="10.0"/>
+			<And name="peptide_surface_interface" selectors="channel_neighbors,Peptide_chain,is_surface" />
+			
+			<!-- Specifying channel interface residues in a 10 A neighborhood to peptide -->
+			<Neighborhood name="peptide_neighbors" selector="Peptide_chain" distance="10.0"/>
+			<And name="channel_interface" selectors="peptide_neighbors,Channel_chain" />
+			
+			<!-- Specifying peptide surface residues not at interface -->
+			<Not name="not_peptide_interface" selector="peptide_surface_interface" />
+			<And name="non_interface_peptide_surface" selectors="not_peptide_interface,Peptide_chain,is_surface" />
+			
+			<!-- Specifying channel surface residues not at interface -->
+			<Not name="not_channel_neighbors" selector="channel_interface" />
+			<And name="non_interface_channel" selectors="not_channel_neighbors,Channel_chain" />
+			
+		<!-- Phase 999: Misc movers not yet implemented -->
+
+	</RESIDUE_SELECTORS>
+
+	<RESIDUE_LEVEL_TASK_OPERATIONS>
+			<!-- Residue level task operation -->
+			<IncludeCurrentRLT name="inclcr" />
+	</RESIDUE_LEVEL_TASK_OPERATIONS>
+
+	<TASKOPERATIONS>
+		<!-- Phase 3: Design determination and operations for each residue -->
+			<!-- Restrict residue selection during design by residue burial; standard Layer Design -->
+			<DesignRestrictions name="AllDesign">
+				<Action selector_logic="surfaceLayerSelector AND helix_start" aas="EHKPQR"/>
+				<Action selector_logic="surfaceLayerSelector AND helix" aas="EHKQR"/>
+				<Action selector_logic="surfaceLayerSelector AND sheet" aas="DEHKNQRST"/>
+				<Action selector_logic="surfaceLayerSelector AND loop" aas="DEGHKNPQRST"/>
+				<Action selector_logic="boundaryLayerSelector AND helix_start" aas="ADEHIKLMNPQRSTVWY"/>
+				<Action selector_logic="boundaryLayerSelector AND helix" aas="ADEHIKLMNQRSTVWY"/>
+				<Action selector_logic="boundaryLayerSelector AND sheet" aas="DEFHIKLMNQRSTVWY"/>
+				<Action selector_logic="boundaryLayerSelector AND loop" aas="ADEFGHIKLMNPQRSTVWY"/>
+				<Action selector_logic="coreLayerSelector AND helix_start" aas="AFILMPVWY"/>
+				<Action selector_logic="coreLayerSelector AND helix" aas="AFILMVWY"/>
+				<Action selector_logic="coreLayerSelector AND sheet" aas="FILMVWY"/>
+				<Action selector_logic="coreLayerSelector AND loop" aas="AFGILMPVWY"/>
+				<Action selector_logic="helix_cap" aas="DNST"/>
+			</DesignRestrictions>
+			
+			<!-- Target core, surface, boundary, and core/boundary residues on peptide -->
+			<OperateOnResidueSubset name="core" selector="coreLayerSelector" residue_level_operations="inclcr" />
+
+			<OperateOnResidueSubset name="prevent_repack_design_core_boundary" selector="peptide_core_boundary" residue_level_operations="inclcr" >
+				<PreventRepackingRLT/>
+			</OperateOnResidueSubset>
+
+			<!-- Design (and repack) on the peptide surface interface with extra rotamer sampling-->
+			<OperateOnResidueSubset name="Design_peptide_surface_interface" selector="peptide_surface_interface" >
+				<ExtraRotamersGenericRLT ex1="1" ex2="1" ex3="0" ex4="0" ex1aro="1" ex2aro="1" extrachi_cutoff="10"/>
+			</OperateOnResidueSubset>
+
+			<!-- Do not design (but do repack) on the channel interface residues -->
+			<OperateOnResidueSubset name="restrict_channel_interface" selector="channel_interface" >
+				<RestrictToRepackingRLT/>
+			</OperateOnResidueSubset>
+			
+			<!-- Do not design and do not repack on the channel non-interface -->
+			<OperateOnResidueSubset name="prevent_channel_non_interface" selector="non_interface_channel" >
+				<PreventRepackingRLT/>
+			</OperateOnResidueSubset>
+			
+			<!-- Do not design (but do repack) on the peptide core/boundary, excluding disulfide selection -->
+			<OperateOnResidueSubset name="restrict_peptide_core_boundary" selector="is_core_boundary" >
+				<RestrictToRepackingRLT/>
+			</OperateOnResidueSubset>
+
+			<!-- Do not design (but do repack) on the peptide non-interface surface -->
+			<OperateOnResidueSubset name="restrict_peptide_surface_non_interface" selector="non_interface_peptide_surface" >
+				<RestrictToRepackingRLT/>
+			</OperateOnResidueSubset>
+
+			<!-- Only repack disulfides -->
+			<OperateOnResidueSubset name="restrict_cys" selector="peptide_cys" >
+				<RestrictToRepackingRLT/>
+			</OperateOnResidueSubset>
+
+		<!-- Phase 999: Misc movers not yet implemented -->
+		<InitializeFromCommandline name="ifcl" />
+		
+	</TASKOPERATIONS>
+	<MOVERS>
+		<!-- This needs to be adjusted depending on the chain order for your design inputs -->
+		<SwitchChainOrder name="keep_peptide" chain_order="2" />
+	</MOVERS>
+	<FILTERS>
+		<!-- Phase 3: Design-level filters -->
+		<!-- Note: filters can either be used as filtering criteria or as a reporter. Use one of the two options -->
+		
+		<!-- 3.1: Filters for the peptide fold -->
+			<!-- Secondary structure prediction using PSIPRED -->
+			<SSPrediction name="sspred_filter" cmd="/home/user/Software/psipred/runpsipred_single" use_probability="0" use_svm="0" threshold="0.85" confidence="1"/>
+			<SSPrediction name="sspred_report" cmd="/home/user/Software/psipred/runpsipred_single" use_probability="0" use_svm="0" threshold="0.85" confidence="0"/>
+			
+			<!-- Packstat packing statistics -->
+			<PackStat name="Packstat_filter" threshold="0.55" repeats="5" chain="1" confidence="1" />
+			<PackStat name="Packstat_report" threshold="0.55" repeats="5" chain="1" confidence="0" />
+			
+			<!-- Score per residue -->
+			<ScoreType name="score_report" scorefxn="fullatom" score_type="total_score" threshold="0.0" confidence="0" />
+			<ResidueCount name="residue_count_report" confidence="0" />
+			
+			<CalculatorFilter name="score_per_res_filter" equation="SCORE/NRES" threshold="-2.0" confidence="1" >
+				<Var name="SCORE" filter_name="score_report" />
+				<Var name="NRES" filter_name="residue_count_report" />
+			</CalculatorFilter>
+			
+			<CalculatorFilter name="score_per_res_report" equation="SCORE/NRES" threshold="-2.0" confidence="0" >
+				<Var name="SCORE" filter_name="score_report" />
+				<Var name="NRES" filter_name="residue_count_report" />
+			</CalculatorFilter>
+			
+			<!-- Buried Unsaturated Hydrogen bonds for peptide core -->
+			BuriedUnsatHbonds name="peptide_core_unsat_Hbonds_filter" residue_selector="Peptide_chain" report_all_heavy_atom_unsats="true"
+				scorefxn="fullatom" ignore_surface_res="true" atomic_depth_selection="5.5" burial_cutoff="1000"
+				cutoff="0" confidence="0" />
+				
+			BuriedUnsatHbonds name="peptide_core_unsat_Hbonds_report" residue_selector="Peptide_chain" report_all_heavy_atom_unsats="true"
+				scorefxn="fullatom" ignore_surface_res="true" atomic_depth_selection="5.5" burial_cutoff="1000"
+				cutoff="0" confidence="0" />
+				
+			<!--Core assessment for at least one hydrophobic per secondary structure element-->
+			<SecondaryStructureHasResidue name="ss_contributes_core_filter"
+				secstruct_fraction_threshold="1.0" required_restypes="VILMFYW"
+				nres_required_per_secstruct="1" filter_helix="1" filter_sheet="1"
+				filter_loop="0" min_helix_length="4" min_sheet_length="2" min_loop_length="1"
+				confidence="1"/>
+				
+			<SecondaryStructureHasResidue name="ss_contributes_core_report"
+				secstruct_fraction_threshold="1.0" required_restypes="VILMFYW"
+				nres_required_per_secstruct="1" filter_helix="1" filter_sheet="1"
+				filter_loop="0" min_helix_length="4" min_sheet_length="2" min_loop_length="1"
+				confidence="0"/>
+			
+			<!-- Calculate buried peptide hydrophobic surface area. (reporter only) Good for redesign evaluation.-->
+			<BuriedSurfaceArea name="buried_peptide_hydrophobic_SA_report" select_only_FAMILYVW="1" 
+				atom_mode="hydrophobic_atoms" residue_selector="Peptide_chain" confidence="0.0"/>
+				
+			<!-- Check for peptide voids -->
+			Holes name="peptide_holes_filter" threshold="2.0" residue_selector="Peptide_chain" confidence="1.0" />
+			
+			Holes name="peptide_holes_report" threshold="2.0" residue_selector="Peptide_chain" confidence="0.0" />
+			
+			<!-- Check for peptide core/boundary cavities (reporter only) -->
+			<!--Note: A value of 20 A^3 is approx. equal to the volume of a carbon atom -->
+			<CavityVolume name="Cavity_report" confidence="0" />
+			 
+			<!-- Check for favorable disulfide scores -->
+			<TaskAwareScoreType name="dslf_quality_check_filter" task_operations="restrict_cys"
+				scorefxn="fullatom" score_type="dslf_fa13" mode="individual" threshold="-0.27" 
+				confidence="1" />
+				
+			<ScoreType name="dsf_quality_report" scorefxn="fullatom" score_type="dslf_fa13" threshold="-0.27" confidence="1" />
+			
+			<TaskAwareScoreType name="dslf_quality_check_report" task_operations="restrict_cys"
+				scorefxn="fullatom" score_type="dslf_fa13" mode="individual" threshold="-0.27" 
+				confidence="0" />
+			
+			<!--Disulfide entropy filter; verifies that disulfide formation is favorable relative to non-bonded cys pairs-->
+			<DisulfideEntropy name="dsf_entropy_filter" lower_bound="0" tightness="2.03" confidence="1"/>
+			
+			<DisulfideEntropy name="dsf_entropy_report" lower_bound="0" tightness="2.03" confidence="0"/>
+			
+			<!-- Peptide only filter specification -->
+			<MoveBeforeFilter name="score_per_res_peptide_filter" mover="keep_peptide" filter="score_per_res_report" confidence="1" />
+			<MoveBeforeFilter name="sspred_peptide_report" mover="keep_peptide" filter="sspred_report" confidence="0" />
+			<MoveBeforeFilter name="ss_contributes_core_peptide_filter" mover="keep_peptide" filter="ss_contributes_core_report" confidence="1" />
+			<MoveBeforeFilter name="buried_hydrophobic_SA_peptide_report" mover="keep_peptide" filter="buried_peptide_hydrophobic_SA_report" confidence="0" />
+			<MoveBeforeFilter name="dslf_quality_check_peptide_filter" mover="keep_peptide" filter="dsf_quality_report" confidence="1" />
+			<MoveBeforeFilter name="dsf_entropy_peptide_filter" mover="keep_peptide" filter="dsf_entropy_report" confidence="1" />
+			<MoveBeforeFilter name="packstat_peptide_filter" mover="keep_peptide" filter="Packstat_report" confidence="1" />
+			<MoveBeforeFilter name="cavity_peptide_report" mover="keep_peptide" filter="Cavity_report" confidence="0" />
+			
+			<!--Combine all peptide monomer filters -->
+			<CompoundStatement name="peptide_fold_custom" >
+				<AND filter_name="packstat_peptide_filter" />
+				<AND filter_name="ss_contributes_core_peptide_filter" />
+				<AND filter_name="dslf_quality_check_peptide_filter" />
+				<AND filter_name="dsf_entropy_peptide_filter" />
+			</CompoundStatement>
+			
+		<!-- 3.2: Filters for the peptide-channel interface -->
+			<!-- DDG evaluation. Repacks the bound and unbound states before calculating. Average from 5 repeated calculations -->
+			<Ddg name="Complex_DDG_filter" threshold ="-15.0" jump="1" repeats="5" repack="1"
+				relax_unbound="1" scorefxn="fullatom"  confidence="1.0" />
+				
+			<Ddg name="Complex_DDG_report" threshold ="-15.0" jump="1" repeats="5" repack="1"
+				relax_unbound="1" scorefxn="fullatom"  confidence="0.0" />
+				
+			<!-- Peptide interface shape complementarity -->
+			<ShapeComplementarity name="Shape_complement_filter" min_sc="0.5" min_interface="0.0" jump="1"
+				residue_selector1="Peptide_chain" residue_selector2="Channel_chain" 
+				write_int_area="1" confidence ="1.0"/>
+				
+			<ShapeComplementarity name="Shape_complement_report" min_sc="0.5" min_interface="0.0" jump="1"
+				residue_selector1="Peptide_chain" residue_selector2="Channel_chain" 
+				write_int_area="1" confidence ="0.0"/>
+				
+			<!-- Interface Solvent Accessible Surface Area -->
+			<Sasa name="interface_sasa_filter" threshold="800" jump="1" confidence="1.0" />
+			
+			<Sasa name="interface_sasa_report" threshold="800" jump="1" confidence="0.0" />
+			
+			<!-- Interface binding energy density (DDG/DSASA) -->
+			InterfaceBindingEnergyDensityFilter name="binding_density_filter" sasa_filter="interface_sasa_report" ddG_filter="Complex_DDG_report"
+				threshold="-0.015" confidence="1.0" />
+				
+			InterfaceBindingEnergyDensityFilter name="binding_density_report" sasa_filter="interface_sasa_report" ddG_filter="Complex_DDG_report"
+				threshold="-0.015" confidence="0.0" />
+			<CalculatorFilter name="binding_density_filter" equation="DDG/SASA" threshold="-0.015" confidence="1" >
+				<Var name="DDG" filter_name="Complex_DDG_report" />
+				<Var name="SASA" filter_name="interface_sasa_report" />
+			</CalculatorFilter>
+			<!-- Combine all interface filters -->
+			<CompoundStatement name="interface_filters" >
+				<AND filter_name="Complex_DDG_filter" /> 
+				<AND filter_name="Shape_complement_filter" />
+				<AND filter_name="interface_sasa_filter" />
+				<AND filter_name="binding_density_filter" />
+			</CompoundStatement>
+			
+			<CompoundStatement name="interface_report" >
+				<AND filter_name="Complex_DDG_report" /> 
+				<AND filter_name="Shape_complement_report" />
+				<AND filter_name="interface_sasa_report" />
+				AND filter_name="binding_density_report" />
+			</CompoundStatement>
+		<!-- Fold-level Filters -->
+		<!--Phase 999: Misc -->
+			<!-- report designable/repackable residues (DEBUG USE)-->
+			<DesignableResidues name="core_boundary_report" task_operations="ifcl,restrict_peptide_core_boundary,restrict_cys,Design_peptide_surface_interface,restrict_channel_interface,prevent_channel_non_interface,restrict_peptide_surface_non_interface,AllDesign" designable="1" packable="1" lower_cutoff="1" upper_cutoff="1000"/>
+	</FILTERS>
+	<MOVERS>
+		<!-- Phase 0: PyMol debug through visualization -->
+			<PyMOLMover name="pmm" keep_history="1" />
+		<!-- Phase 1: Layer selection -->
+			<!-- Rigid body translational mover -->
+			<RigidBodyTransMover name="separate_complex" jump="1" distance="500" x="1" y="1" z="1" />
+			<RigidBodyTransMover name="reset_complex" jump="1" distance="-500" x="1" y="1" z="1" />
+
+			<!-- Create residue labels indicating each residue's peptide layer (unbound to complex) -->
+			<AddResidueLabel name="core_boundary_label" label="LABELS core/boundary" residue_selector="peptide_core_boundary" />
+			<AddResidueLabel name="surface_label" label="LABELS surface" residue_selector="peptide_surface" />
+			<AddResidueLabel name="cys_label" label="LABELS Cys" residue_selector="peptide_dsf" />
+		<!-- Phase 2: Interface determination -->
+		
+		<!-- 2.1: Mutate peptide surface interface to alanine -->
+			<MutateResidue name="mutateAla" residue_selector="peptide_surface_interface" new_res="ALA" />
+		
+		<!-- Phase 3: Design -->
+		<!-- 3.1: Design peptide surface interface -->
+			<!-- This is the FastDesign mover, which is repeated iteratively using a Monte Carlo Metropolis criterion mover -->
+			<FastDesign name="FastDesign_peptide_surfaceInterface" scorefxn="fullatom" repeats="1"
+				task_operations="restrict_peptide_core_boundary,restrict_cys,Design_peptide_surface_interface,restrict_channel_interface,prevent_channel_non_interface,restrict_peptide_surface_non_interface,AllDesign"
+				clear_designable_residues="0" >
+				<MoveMap name="movemap_design" >
+					<Jump number="1" setting="1" />
+					<ResidueSelector selector="is_core_boundary" chi="1" bb="1" bondangle="0" bondlength="0" />
+					<ResidueSelector selector="is_peptide_dsf" chi="1" bb="1" bondangle="0" bondlength="0" />
+					<ResidueSelector selector="peptide_surface_interface" chi="1" bb="1" bondangle="0" bondlength="0" />
+					<ResidueSelector selector="channel_interface" chi="1" bb="0" bondangle="0" bondlength="0" />
+					<ResidueSelector selector="non_interface_channel" chi="0" bb="0" bondangle="0" bondlength="0" />
+				</MoveMap>
+			</FastDesign>
+			
+			<!-- ParsedProtocol to update label definitions after 1 design round -->
+			<ParsedProtocol name="label_step" mode="sequence" >
+				<Add mover="separate_complex" />
+				<Add mover="surface_label" />
+				<Add mover="core_boundary_label" />
+				<Add mover="cys_label" />
+				<Add mover="reset_complex" />
+				<Add mover="mutateAla" />
+				<Add mover="separate_complex" />
+				<Add mover="surface_label" />
+				<Add mover="core_boundary_label" />
+				<Add mover="cys_label" />
+				<Add mover="reset_complex" />
+			</ParsedProtocol>
+			
+			<ParsedProtocol name="design_step" mode="sequence" >
+				<Add mover="label_step" />
+				<Add mover="FastDesign_peptide_surfaceInterface" />
+			</ParsedProtocol>
+				
+			<!-- This is the Monte Carlo mover, which iterates FastDesign while screening for appropriate fold/interface conditions -->
+			<GenericMonteCarlo name="MonteCarlo_FastDesign_SurfaceInterface"
+				mover_name="design_step"
+				filter_name="ss_contributes_core_peptide_filter"
+				sample_type="low"
+				task_scaling="5"
+				preapply="0"
+				stopping_condition="interface_filters" >
+				<Filters>
+					<AND filter_name="packstat_peptide_filter" />
+					<AND filter_name="dslf_quality_check_peptide_filter" />
+					<AND filter_name="dsf_entropy_peptide_filter" />
+				</Filters>
+				</GenericMonteCarlo>
+			
+		<!-- 3.2 Final relax step on peptide -->
+		<!-- You need to change the chi bb settings depending on chain order and context -->
+			<FastRelax name="peptide_fast_relax" scorefxn="fullatom" >
+				<MoveMap name="peptide_map" >
+					<Chain number="1" chi="1" bb="0" />
+					<Chain number="2" chi="1" bb="1" />
+					<Jump number="1" setting="0" />
+				</MoveMap>
+			</FastRelax>
+			
+		<!-- 3.3. InterfaceAnalyzer -->
+			<InterfaceAnalyzerMover name="Interface_Analyzer" scorefxn="fullatom" pack_separated="1"
+				pack_input="0" packstat="1" interface_sc="1" jump="1" />
+				
+		<!-- 4. For peptide filters -->
+			SwitchChainOrder name="keep_peptide" chain_order="1" />
+	</MOVERS>
+	
+	<PROTOCOLS>
+		<!-- interface determination -->
+		Add mover_name="pmm" /> <!--Debug only -->
+		Add mover_name="separate_complex" />
+		Add mover_name="surface_label" />
+		Add mover_name="core_boundary_label" />
+		Add mover_name="cys_label" />
+		Add mover_name="reset_complex" />
+		Add filter_name="core_boundary_report" /> <!--Debug only -->
+		<!-- alanine substitution -->
+		Add mover_name="mutateAla" />
+		Add filter_name="core_boundary_report" /> <!--Debug only -->
+		<!-- Design -->
+		Add mover_name="design_step" />
+		<Add mover_name="MonteCarlo_FastDesign_SurfaceInterface" />
+		<Add mover_name="peptide_fast_relax" />
+		<!--Interface Analyzer and Final filter check -->
+		<Add mover_name="Interface_Analyzer" />
+		<Add filter_name="score_per_res_peptide_filter" />
+		<Add filter_name="sspred_peptide_report" />
+		<Add filter_name="ss_contributes_core_peptide_filter" />
+		<Add filter_name="buried_hydrophobic_SA_peptide_report" />
+		<Add filter_name="dslf_quality_check_peptide_filter" />
+		<Add filter_name="dsf_entropy_peptide_filter" />
+		<Add filter_name="packstat_peptide_filter" />
+		<Add filter_name="cavity_peptide_report" />
+		<Add filter_name="Shape_complement_filter" />
+		<Add filter_name="interface_sasa_filter" />
+		<Add filter_name="binding_density_filter" />
+		Add filter_name="peptide_fold_report" />
+		Add filter_name="interface_report" />
+		
+	</PROTOCOLS>
+	
+</ROSETTASCRIPTS>

@@ -1,0 +1,66 @@
+<ROSETTASCRIPTS>
+	<!-- Updated 2021-05-05: Script created -->
+	<SCOREFXNS>
+		<ScoreFunction name="fullatom" weights="ref2015" symmetric="0" />
+	</SCOREFXNS>
+	
+	<RESIDUE_SELECTORS>
+		<ResidueName name="CYD_picker" residue_name3="CYS" />
+		<Not name="not_CYD_picker" selector="CYD_picker" />
+	</RESIDUE_SELECTORS>
+	
+	<TASKOPERATIONS>
+		<OperateOnResidueSubset name="disulfide_selector" selector="not_CYD_picker">
+			<PreventRepackingRLT />
+		</OperateOnResidueSubset>
+
+		<!--Do not allow non-realistic chi angles of aromatic residues-->
+		<LimitAromaChi2 name="limitchi2" include_trp="True" />
+	
+		<!--Increase rotamer diversity to packer-->
+		<ExtraRotamersGeneric name="extra_rots" ex1="True" ex2="True" />
+	</TASKOPERATIONS>
+	
+	<FILTERS>
+
+		<!--Core assessment for at least one hydrophobic per secondary structure element-->
+		<SecondaryStructureHasResidue name="ss_contributes_core"
+			secstruct_fraction_threshold="1.0" required_restypes="VILMFYW"
+			nres_required_per_secstruct="1" filter_helix="1" filter_sheet="1"
+			filter_loop="0" min_helix_length="4" min_sheet_length="2" min_loop_length="1"
+			confidence="1"/>		
+
+		<!-- Check for favorable disulfide scores -->
+		<TaskAwareScoreType name="dslf_quality_check" task_operations="disulfide_selector"
+			scorefxn="fullatom" score_type="dslf_fa13" mode="individual" threshold="-0.27" 
+			confidence="1" />
+
+		<!--Disulfide entropy filter; verifies that disulfide formation is favorable relative to non-bonded cys pairs-->
+		<DisulfideEntropy name="entropy" lower_bound="0" tightness="2.03" confidence="1" />
+		
+		<!--Total score filter -->
+		<ScoreType name="score_report" scorefxn="fullatom" score_type="total_score" threshold="0.0" confidence="1" />
+		
+		<CompoundStatement name="sequence_quality_compound_filter" >
+			<AND filter_name="score_report" />
+			<AND filter_name="ss_contributes_core" />
+			<AND filter_name="dslf_quality_check" />
+			<AND filter_name="entropy" />
+		</CompoundStatement>
+	</FILTERS>
+	
+	<MOVERS>
+		<!-- Score pose -->
+		<ScoreMover name="score_pose" scorefxn="fullatom" verbose="0" />
+
+		<LoopOver name="iterate"
+			mover_name="score_pose"
+			filter_name="sequence_quality_compound_filter" iterations="1"
+			drift="False" ms_whenfail="FAIL_DO_NOT_RETRY" />
+	</MOVERS>
+	
+	<PROTOCOLS>
+		<Add mover="iterate"/>
+	</PROTOCOLS>
+	
+</ROSETTASCRIPTS>
